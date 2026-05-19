@@ -2,9 +2,13 @@ include("autodiff.jl")
 
 global IS_TRAINING = true
 
-function glorot_uniform(shape...; fan_in, fan_out)
-    scale = sqrt(24.0 / (fan_in + fan_out))
-    return (rand(shape...) .- 0.5) .* scale
+# function glorot_uniform(shape...; fan_in, fan_out)
+#     scale = sqrt(24.0 / (fan_in + fan_out))
+#     return (rand(shape...) .- 0.5) .* scale
+# end
+
+function he_uniform(shape...; fan_in, fan_out=nothing)
+    return (rand(shape...) .- 0.5) .* sqrt(24.0 / fan_in)
 end
 
 abstract type Operator end
@@ -43,7 +47,7 @@ Dense(pair::Pair{Int, Int}, activation) = tuple(Dense(pair), activation())
 
 function (layer::Dense)(x::GraphNode)
     n, m = layer.insize, layer.outsize
-    W_data = glorot_uniform(m, n; fan_in=n, fan_out=m)
+    W_data = he_uniform(m, n; fan_in=n, fan_out=m)
     b_data = zeros(m)
     W = GraphNode(W_data, true)
     b = GraphNode(b_data, true)
@@ -150,7 +154,7 @@ function (layer::Conv)(x::GraphNode)
 
     fan_in = filter_height * filter_width * channels_in
     fan_out = filter_height * filter_width * channels_out
-    W_data = glorot_uniform(filter_height, filter_width, channels_in, channels_out; fan_in=fan_in, fan_out=fan_out)
+    W_data = he_uniform(filter_height, filter_width, channels_in, channels_out; fan_in=fan_in, fan_out=fan_out)
     b_data = layer.bias ? zeros(channels_out) : zeros(0)
 
     W = GraphNode(W_data, true)
