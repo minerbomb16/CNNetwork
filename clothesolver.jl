@@ -8,7 +8,7 @@ global IS_TRAINING = true
 # end
 
 function he_uniform(shape...; fan_in, fan_out=nothing)
-    return (rand(shape...) .- 0.5) .* sqrt(24.0 / fan_in)
+    return (rand(Float32, shape...) .- 0.5f0) .* Float32(sqrt(24.0 / fan_in))
 end
 
 abstract type Operator end
@@ -48,22 +48,33 @@ Dense(pair::Pair{Int, Int}, activation) = tuple(Dense(pair), activation())
 function (layer::Dense)(x::GraphNode)
     n, m = layer.insize, layer.outsize
     W_data = he_uniform(m, n; fan_in=n, fan_out=m)
-    b_data = zeros(m)
+    b_data = zeros(Float32, m)
     W = GraphNode(W_data, true)
     b = GraphNode(b_data, true)
-    return GraphNode(:dense, (W, b, x), zeros(m))
+    return GraphNode(:dense, (W, b, x), zeros(Float32, m))
 end
 
 function primal!(y::GraphNode{:dense, 3})
     W, b, x = y.args
-    y.data .= W.data * x.data .+ b.data
+    W_data = W.data::Matrix{Float32}
+    b_data = b.data::Vector{Float32}
+    x_data = x.data::Vector{Float32}
+    
+    mul!(y.data, W_data, x_data)
+    y.data .+= b_data
 end
 
 function adjoint!(y::GraphNode{:dense, 3})
     W, b, x = y.args
-    W.grad .+= y.grad * x.data'
-    b.grad .+= y.grad
-    x.grad .+= W.data' * y.grad
+    W_data = W.data::Matrix{Float32}
+    W_grad = W.grad::Matrix{Float32}
+    b_grad = b.grad::Vector{Float32}
+    x_data = x.data::Vector{Float32}
+    x_grad = x.grad::Vector{Float32}
+    
+    mul!(W_grad, y.grad, x_data', 1, 1) 
+    b_grad .+= y.grad
+    mul!(x_grad, W_data', y.grad, 1, 1) 
 end
 
 # ============================= RELU =============================
@@ -72,37 +83,43 @@ struct ReLU <: Operator end
 relu() = ReLU()
 
 function (layer::ReLU)(x::GraphNode)
-    return GraphNode(:relu, (x,), zeros(size(x.data)))
+    return GraphNode(:relu, (x,), zeros(Float32, size(x.data)))
 end
 
-function primal!(y::GraphNode{:relu, 1})
+function primal!(y::GraphNode{:relu, 1, T}) where T
     x, = y.args
-    y.data .= max.(0, x.data)
+    x_data = x.data::T
+    y.data .= max.(0, x_data)
 end
 
-function adjoint!(y::GraphNode{:relu, 1})
+function adjoint!(y::GraphNode{:relu, 1, T}) where T
     x, = y.args
-    x.grad .+= y.grad .* (y.data .> 0)
+    x_grad = x.grad::T
+    @. x_grad += y.grad * (y.data > 0)
 end
 
 # ============================= DROPOUT =============================
 
 struct Dropout <: Operator
-    p::Float64
+    p::Float32
 end
 
 function (layer::Dropout)(x::GraphNode)
-    return GraphNode(:dropout, (x,), zeros(size(x.data)), 
-                     params=Dict(:p => layer.p, :mask => zeros(Bool, size(x.data))))
+    return GraphNode(:dropout, (x,), zeros(Float32, size(x.data)), 
+                     params=Dict(:p => layer.p,
+                                 :mask => zeros(Bool, size(x.data)),
+                                 :rand_buffer => zeros(Float32, size(x.data))))
 end
 
 function primal!(y::GraphNode{:dropout, 1})
     x, = y.args
     if IS_TRAINING
-        p = y.params[:p]
-        mask = rand(size(x.data)...) .> p
-        y.params[:mask] .= mask
-        y.data .= (x.data .* mask) ./ (1.0 - p)
+        p = y.params[:p]::Float32
+        mask = y.params[:mask]::Vector{Bool}
+        rand_buffer = y.params[:rand_buffer]::Vector{Float32}
+        rand!(rand_buffer)
+        mask .= rand_buffer .> p
+        y.data .= (x.data .* mask) ./ (1.0f0 - p)
     else
         y.data .= x.data
     end
@@ -113,7 +130,7 @@ function adjoint!(y::GraphNode{:dropout, 1})
     if IS_TRAINING
         p = y.params[:p]
         mask = y.params[:mask]
-        x.grad .+= (y.grad .* mask) ./ (1.0 - p)
+        x.grad .+= (y.grad .* mask) ./ (1.0f0 - p)
     else
         x.grad .+= y.grad
     end
@@ -125,17 +142,19 @@ struct Flatten <: Operator end
 
 function (layer::Flatten)(x::GraphNode)
     flat_size = prod(size(x.data))
-    return GraphNode(:flatten, (x,), zeros(flat_size))
+    return GraphNode(:flatten, (x,), zeros(Float32, flat_size))
 end
 
 function primal!(y::GraphNode{:flatten, 1})
     x, = y.args
-    y.data .= vec(x.data)
+    x_data = x.data::Array{Float32, 3}
+    y.data .= vec(x_data)
 end
 
 function adjoint!(y::GraphNode{:flatten, 1})
     x, = y.args
-    x.grad .+= reshape(y.grad, size(x.grad))
+    x_grad = x.grad::Array{Float32, 3}
+    x_grad .+= reshape(y.grad, size(x_grad))
 end
 
 # ============================= CONV =============================
@@ -155,7 +174,7 @@ function (layer::Conv)(x::GraphNode)
     fan_in = filter_height * filter_width * channels_in
     fan_out = filter_height * filter_width * channels_out
     W_data = he_uniform(filter_height, filter_width, channels_in, channels_out; fan_in=fan_in, fan_out=fan_out)
-    b_data = layer.bias ? zeros(channels_out) : zeros(0)
+    b_data = layer.bias ? zeros(Float32, channels_out) : zeros(Float32, 0)
 
     W = GraphNode(W_data, true)
     b = GraphNode(b_data, true)
@@ -164,11 +183,14 @@ function (layer::Conv)(x::GraphNode)
     height_out = height + 3 - filter_height
     width_out = width + 3 - filter_width
 
-    return GraphNode(:conv, (W, b, x), zeros(height_out, width_out, channels_out))
+    return GraphNode(:conv, (W, b, x), zeros(Float32, height_out, width_out, channels_out))
 end
 
 function primal!(y::GraphNode{:conv, 3})
     W, b, x = y.args
+    W_data = W.data::Array{Float32, 4}
+    b_data = b.data::Vector{Float32}
+    x_data = x.data::Array{Float32, 3}
 
     function conv_primal_work!(y_data, W_data, b_data, x_data)
         height, width, channels_in = size(x_data)
@@ -178,7 +200,7 @@ function primal!(y::GraphNode{:conv, 3})
         @inbounds for c_out in 1:channels_out
             for h in axes(y_data, 1)
                 for w in axes(y_data, 2)
-                    sum_val = 0.0
+                    sum_val = 0.0f0
                     for c_in in 1:channels_in
                         for fh in 1:filter_height
                             for fw in 1:filter_width
@@ -190,17 +212,24 @@ function primal!(y::GraphNode{:conv, 3})
                             end
                         end
                     end
-                    bias_val = length(b_data) > 0 ? b_data[c_out] : 0.0
+                    bias_val = length(b_data) > 0 ? b_data[c_out] : 0.0f0
                     y_data[h, w, c_out] = sum_val + bias_val
                 end
             end
         end
     end
-    conv_primal_work!(y.data, W.data, b.data, x.data)
+    y_data = y.data::Array{Float32, 3}
+    conv_primal_work!(y_data, W_data, b_data, x_data)
 end
 
 function adjoint!(y::GraphNode{:conv, 3})
     W, b, x = y.args
+    W_data = W.data::Array{Float32, 4}
+    W_grad = W.grad::Array{Float32, 4}
+    b_data = b.data::Vector{Float32}
+    b_grad = b.grad::Vector{Float32}
+    x_data = x.data::Array{Float32, 3}
+    x_grad = x.grad::Array{Float32, 3}
 
     function conv_adjoint_work!(y_grad, W_data, W_grad, b_data, b_grad, x_data, x_grad)
         height, width, channels_in = size(x_data)
@@ -230,7 +259,8 @@ function adjoint!(y::GraphNode{:conv, 3})
             end
         end
     end
-    conv_adjoint_work!(y.grad, W.data, W.grad, b.data, b.grad, x.data, x.grad)
+    y_grad = y.grad::Array{Float32, 3}
+    conv_adjoint_work!(y_grad, W_data, W_grad, b_data, b_grad, x_data, x_grad)
 end
 
 # ============================= MAXPOOL =============================
@@ -248,7 +278,7 @@ function (layer::MaxPool)(x::GraphNode)
     
     argmax_mask = Array{Tuple{Int,Int}}(undef, height_out, width_out, channels)
     
-    return GraphNode(:maxpool, (x,), zeros(height_out, width_out, channels), 
+    return GraphNode(:maxpool, (x,), zeros(Float32, height_out, width_out, channels), 
                      params=Dict(:pool => layer.pool, :argmax => argmax_mask))
 end
 
@@ -284,7 +314,12 @@ function primal!(y::GraphNode{:maxpool, 1})
             end
         end
     end
-    maxpool_primal_work!(y.data, x.data, y.params[:argmax], y.params[:pool])
+    y_data = y.data::Array{Float32, 3}
+    x_data = x.data::Array{Float32, 3}
+    argmax_mask = y.params[:argmax]::Array{Tuple{Int, Int}, 3}
+    pool_size = y.params[:pool]::Tuple{Int, Int}
+    
+    maxpool_primal_work!(y.data, x.data, argmax_mask, pool_size)
 end
 
 function adjoint!(y::GraphNode{:maxpool, 1})
@@ -304,7 +339,11 @@ function adjoint!(y::GraphNode{:maxpool, 1})
             end
         end
     end
-    maxpool_adjoint_work!(y.grad, x.grad, y.params[:argmax])
+    y_grad = y.grad::Array{Float32, 3}
+    x_grad = x.grad::Array{Float32, 3}
+    argmax_mask = y.params[:argmax]::Array{Tuple{Int, Int}, 3}
+    
+    maxpool_adjoint_work!(y.grad, x.grad, argmax_mask)
 end
 
 # ============================= LOGIT CROSS ENTROPY =============================
@@ -312,24 +351,30 @@ end
 struct LogitCrossEntropy <: Operator end
 
 function (layer::LogitCrossEntropy)(y_pred::GraphNode, y_true::GraphNode)
-    return GraphNode(:crossentropy, (y_pred, y_true), zeros(1), 
-                     params=Dict(:probs => zeros(size(y_pred.data))))
+    return GraphNode(:crossentropy, (y_pred, y_true), zeros(Float32, 1), 
+                     params=Dict(:probs => zeros(Float32, size(y_pred.data))))
 end
 
 function primal!(node::GraphNode{:crossentropy, 2})
     y_pred, y_true = node.args
+    y_pred_data = y_pred.data::Vector{Float32}
+    y_true_data = y_true.data::Vector{Float32}
     
-    m = maximum(y_pred.data)
-    exp_scores = exp.(y_pred.data .- m)
+    m = maximum(y_pred_data)
+    exp_scores = exp.(y_pred_data .- m)
     probs = exp_scores ./ sum(exp_scores)
-    node.params[:probs] .= probs
     
-    node.data[1] = -sum(y_true.data .* log.(probs .+ 1e-10))
+    probs_buf = node.params[:probs]::Vector{Float32}
+    probs_buf .= probs
+    
+    node.data[1] = -sum(y_true_data .* log.(probs .+ 1f-10))
 end
 
 function adjoint!(node::GraphNode{:crossentropy, 2})
     y_pred, y_true = node.args
-    probs = node.params[:probs]
+    y_pred_grad = y_pred.grad::Vector{Float32}
+    y_true_data = y_true.data::Vector{Float32}
+    probs = node.params[:probs]::Vector{Float32}
     
-    y_pred.grad .+= (probs .- y_true.data) .* node.grad[1]
+    y_pred_grad .+= (probs .- y_true_data) .* node.grad[1]
 end

@@ -1,17 +1,19 @@
-mutable struct GraphNode{OP, N}
-    args :: NTuple{N, GraphNode}
-    grad :: Any
-    data :: Any
+abstract type AbstractNode end
+
+mutable struct GraphNode{OP, N, T} <: AbstractNode
+    args :: NTuple{N, AbstractNode}
+    grad :: T
+    data :: T
     params :: Any
 end
 
-const GraphWeight = GraphNode{:weight, 0}
-const GraphTensor = GraphNode{:tensor, 0}
+const GraphWeight{T} = GraphNode{:weight, 0, T}
+const GraphTensor{T} = GraphNode{:tensor, 0, T}
 function GraphNode(data::T, trainable=false; params=nothing) where T
     if trainable
-        return GraphNode{:weight, 0}((), zero(data), data, params)
+        return GraphNode{:weight, 0, T}((), zero(data), data, params)
     else
-        return GraphNode{:tensor, 0}((), zero(data), data, params)
+        return GraphNode{:tensor, 0, T}((), zero(data), data, params)
     end
 end
 
@@ -19,7 +21,7 @@ function GraphNode(op::Symbol, args::Tuple, data::T; params=nothing) where T
     N = length(args)
     grad = similar(data)
     grad .= 0
-    return GraphNode{op, N}(args, grad, data, params)
+    return GraphNode{op, N, T}(args, grad, data, params)
 end
 
 function graph(node)
@@ -33,13 +35,13 @@ function graph(node)
         end
         return nothing
     end
-    ordered = Vector{GraphNode}()
-    visited = Set{GraphNode}()
+    ordered = Vector{AbstractNode}()
+    visited = Set{AbstractNode}()
     visit!(node, visited, ordered)
     return ordered
 end
 
-function zerograd!(order :: Vector{GraphNode})
+function zerograd!(order :: Vector{AbstractNode})
     for node in order
         node.grad .= 0
     end
@@ -51,7 +53,7 @@ function tangent!(tensor::GraphTensor) end
 function tangent!(weight::GraphWeight) end
 function adjoint!(::GraphTensor) end
 function adjoint!(::GraphWeight) end
-function forward!(order::Vector{GraphNode}, pairs...)
+function forward!(order::Vector{AbstractNode}, pairs...)
     for (tensor, data) in pairs
         tensor.data .= data
     end
@@ -60,18 +62,23 @@ function forward!(order::Vector{GraphNode}, pairs...)
     end
 end
 
-function backward!(order::Vector{GraphNode})
+function backward!(order::Vector{AbstractNode})
 	seed = last(order)
-	seed.grad .= 1
-    for node in reverse(order)
+    seed_grad = (seed::GraphNode{:crossentropy, 2, Vector{Float32}}).grad
+	seed.grad .= 1.0f0
+    for node in Iterators.reverse(order)
         adjoint!(node)
     end
 end
 
 function optimize!(graph, η)
+    function optimize_work!(node::GraphNode{OP, N, T}, η) where {OP, N, T}
+        @. node.data -= η * node.grad
+    end
+
     for node in graph
         if node isa GraphWeight
-            node.data .-= η .* node.grad
+            optimize_work!(node, η)
         end
     end
 end
