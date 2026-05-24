@@ -85,17 +85,17 @@ Alokacje - 91.681 GiB
 7. (203s, 330MiB) Zmina Float64 na Flaot32
 
 ### Performance
-Mikołaj -  
+Mikołaj -  161s  
 Michał - 203s  
 Alokacje - 330MiB  
 
 ---
-
 ## Wersja 3.0
-### Zmiany
+Całkowita zmiana architektury, teraz oparta jest na MemoryPool i generowaniu kodu przy inicjalizacji łańcucha (warstw sieci). Całość nowej
+architektury opisana jest w DOKUMENTACJA.md
 
 
 ### Performance
-Mikołaj -  
-Michał -  
-Alokacje -  
+Mikołaj - 30.76s
+Michał - 
+Aloakcje - 583.404 MiB 

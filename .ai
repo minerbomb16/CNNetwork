@@ -1,0 +1,34 @@
+name: CNNetwork
+description: Julia autodifferentiation and CNN library, highly optimized for one specific use-case.
+
+context: |
+  This is a Julia autodifferentiation and CNN library optimized for a specific neural network.
+  The project includes:
+  - clothesolver.jl and autodiff.jl (core library files, may have different versions)
+  - test.ipynb (tests the intended neural network architecture for fashion item classification)
+  - profiler.ipynb (performance profiling and optimization analysis)
+  - Performance.md (file which explaines changes and their performance effect, this is read only)
+  - Performance_ai.md (file for ai agents for them to explain their changes)
+  
+  Goals:
+  - Maintain >85% accuracy on fashion item classification
+  - Maximize learning speed and performance
+  - Keep codebase minimal and focused
+
+instructions: |
+  - Write all code in Julia
+  - Maintain existing project structure unless explicitly told otherwise
+  - Prioritize performance and code brevity
+  - Profile before optimizing (use profiler.ipynb)
+  - Document any changes to the library interfaces
+
+include:
+  - "*.jl"
+  - "*.ipynb"
+  - "Performance_ai.md"
+  - "Performance.md"
+
+exclude:
+  - ".ipynb_checkpoints/**"
+  - "__pycache__/**"
+  - "*.tmp"

@@ -1,84 +1,74 @@
-abstract type AbstractNode end
-
-mutable struct GraphNode{OP, N, T} <: AbstractNode
-    args :: NTuple{N, AbstractNode}
-    grad :: T
-    data :: T
-    params :: Any
+# ==============================================================================
+# autodiff.jl - PŁASKA PAMIĘĆ I GENERACJA KODU
+# ==============================================================================
+struct MemoryPool
+    weights::Vector{Float32}
+    w_grad::Vector{Float32}
+    w_offset::Base.RefValue{Int}
+    
+    acts::Vector{Float32}
+    a_grad::Vector{Float32}
+    a_offset::Base.RefValue{Int}
 end
 
-const GraphWeight{T} = GraphNode{:weight, 0, T}
-const GraphTensor{T} = GraphNode{:tensor, 0, T}
-function GraphNode(data::T, trainable=false; params=nothing) where T
-    if trainable
-        return GraphNode{:weight, 0, T}((), zero(data), data, params)
-    else
-        return GraphNode{:tensor, 0, T}((), zero(data), data, params)
-    end
+MemoryPool() = MemoryPool(Float32[], Float32[], Ref(1), Float32[], Float32[], Ref(1))
+
+struct GraphNode{T}
+    data::T
+    grad::T
 end
 
-function GraphNode(op::Symbol, args::Tuple, data::T; params=nothing) where T
-    N = length(args)
-    grad = similar(data)
-    grad .= 0
-    return GraphNode{op, N, T}(args, grad, data, params)
+function alloc_weight!(pool::MemoryPool, dims...)
+    len = prod(dims)
+    start = pool.w_offset[]
+    pool.w_offset[] += len
+    append!(pool.weights, zeros(Float32, len))
+    append!(pool.w_grad, zeros(Float32, len))
+    return GraphNode(reshape(view(pool.weights, start:(start+len-1)), dims), 
+                     reshape(view(pool.w_grad, start:(start+len-1)), dims))
 end
 
-function graph(node)
-    function visit!(node::GraphNode, visited, ordered)
-        if !(node in visited)
-            push!(visited, node)
-            for arg in node.args
-                visit!(arg, visited, ordered)
-            end
-            push!(ordered, node)
-        end
-        return nothing
-    end
-    ordered = Vector{AbstractNode}()
-    visited = Set{AbstractNode}()
-    visit!(node, visited, ordered)
-    return ordered
+function alloc_act!(pool::MemoryPool, dims...)
+    len = prod(dims)
+    start = pool.a_offset[]
+    pool.a_offset[] += len
+    append!(pool.acts, zeros(Float32, len))
+    append!(pool.a_grad, zeros(Float32, len))
+    return GraphNode(reshape(view(pool.acts, start:(start+len-1)), dims), 
+                     reshape(view(pool.a_grad, start:(start+len-1)), dims))
 end
 
-function zerograd!(order :: Vector{AbstractNode})
-    for node in order
-        node.grad .= 0
+struct StaticChain{T <: Tuple} layers::T end
+StaticChain(layers...) = StaticChain(layers)
+
+# is_training jest wstrzykiwane bezpośrednio przez kompilator w locie
+@generated function forward!(chain::StaticChain{T}, x::GraphNode, is_training::Bool) where T
+    N = length(T.parameters)
+    exprs = Expr[:(curr_x = x)]
+    for i in 1:N
+        push!(exprs, :(primal!(chain.layers[$i], curr_x, is_training)))
+        push!(exprs, :(curr_x = chain.layers[$i].out))
     end
+    push!(exprs, :(return curr_x))
+    return Expr(:block, exprs...)
 end
 
-function primal!(tensor::GraphTensor)  end
-function primal!(weight::GraphWeight)  end
-function tangent!(tensor::GraphTensor) end
-function tangent!(weight::GraphWeight) end
-function adjoint!(::GraphTensor) end
-function adjoint!(::GraphWeight) end
-function forward!(order::Vector{AbstractNode}, pairs...)
-    for (tensor, data) in pairs
-        tensor.data .= data
+@generated function backward!(chain::StaticChain{T}, x::GraphNode, is_training::Bool) where T
+    N = length(T.parameters)
+    exprs = Expr[]
+    for i in N:-1:1
+        input_expr = i == 1 ? :(x) : :(chain.layers[$(i-1)].out)
+        push!(exprs, :(adjoint!(chain.layers[$i], $input_expr, is_training)))
     end
-    for node in order
-        primal!(node)
-    end
+    push!(exprs, :(return nothing))
+    return Expr(:block, exprs...)
 end
 
-function backward!(order::Vector{AbstractNode})
-	seed = last(order)
-    seed_grad = (seed::GraphNode{:crossentropy, 2, Vector{Float32}}).grad
-	seed.grad .= 1.0f0
-    for node in Iterators.reverse(order)
-        adjoint!(node)
-    end
-end
+function zero_w_grad!(pool::MemoryPool) fill!(pool.w_grad, 0.0f0) end
+function zero_a_grad!(pool::MemoryPool) fill!(pool.a_grad, 0.0f0) end
 
-function optimize!(graph, η)
-    function optimize_work!(node::GraphNode{OP, N, T}, η) where {OP, N, T}
-        @. node.data -= η * node.grad
-    end
-
-    for node in graph
-        if node isa GraphWeight
-            optimize_work!(node, η)
-        end
+function optimize!(pool::MemoryPool, η::Float32)
+    @inbounds @simd for i in eachindex(pool.weights)
+        pool.weights[i] -= η * pool.w_grad[i]
     end
 end
