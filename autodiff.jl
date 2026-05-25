@@ -46,8 +46,11 @@ StaticChain(layers...) = StaticChain(layers)
     N = length(T.parameters)
     exprs = Expr[:(curr_x = x)]
     for i in 1:N
-        push!(exprs, :(primal!(chain.layers[$i], curr_x, is_training)))
-        push!(exprs, :(curr_x = chain.layers[$i].out))
+        # Twarde wymuszenie na kompilatorze wyciągnięcia konkretnego pola z krotki
+        layer_expr = :(getfield(chain.layers, $i)) 
+        
+        push!(exprs, :(primal!($layer_expr, curr_x, is_training)))
+        push!(exprs, :(curr_x = $layer_expr.out))
     end
     push!(exprs, :(return curr_x))
     return Expr(:block, exprs...)
@@ -57,8 +60,10 @@ end
     N = length(T.parameters)
     exprs = Expr[]
     for i in N:-1:1
-        input_expr = i == 1 ? :(x) : :(chain.layers[$(i-1)].out)
-        push!(exprs, :(adjoint!(chain.layers[$i], $input_expr, is_training)))
+        layer_expr = :(getfield(chain.layers, $i))
+        input_expr = i == 1 ? :(x) : :(getfield(chain.layers, $(i-1)).out)
+        
+        push!(exprs, :(adjoint!($layer_expr, $input_expr, is_training)))
     end
     push!(exprs, :(return nothing))
     return Expr(:block, exprs...)

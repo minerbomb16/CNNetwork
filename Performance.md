@@ -96,6 +96,29 @@ architektury opisana jest w DOKUMENTACJA.md
 
 
 ### Performance
-Mikołaj - 30.76s
-Michał - 
-Aloakcje - 583.404 MiB 
+Mikołaj - 30.76s  
+Michał - 24.4s  
+Aloakcje - 583.404 MiB  
+
+---
+## Wersja 4.0
+1. (21s, 17MiB) Dodanie @view w pętli testującej
+
+``` julia
+batch_idx = @view indices[b_start:b_end]
+
+zero_w_grad!(model.pool)
+zero_a_grad!(model.pool)
+
+for (i, idx) in enumerate(batch_idx)
+    copyto!(@view(input_node.data[:, :, :, i]), @view(X[:, :, :, idx]))
+    copyto!(@view(target_node.data[:, i]), @view(Y[:, idx]))
+end
+```
+
+2. (19.39s, 6.742MiB) W test.ipynb zastąpienie wysokopoziomowego wycinania widoków (copyto! z @view) w pętlach ładujących dane bezpośrednim, niskopoziomowym przepisywaniem bajtów za pomocą indeksowania liniowego na płaskich buforach parent(). Ustawienie na 1 wątek
+
+### Performance
+Mikołaj - xs  
+Michał - 19.38s  
+Aloakcje - 6.709 MiB 
